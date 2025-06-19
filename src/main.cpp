@@ -95,7 +95,7 @@ int main(int argc, char* argv[]) {
     memcpy(&api_key, header, 2);
     memcpy(&api_version, header + 2, 2);
 
-    int16_t error_code = 0;
+    int16_t error_code = 35;
     if(api_key == 18)
     {
         if(api_version > 4)
