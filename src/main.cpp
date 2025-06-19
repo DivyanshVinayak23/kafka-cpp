@@ -74,6 +74,21 @@ int main(int argc, char* argv[]) {
         close(server_fd);
         return 1;
     }
+    
+    uint32_t message_size = ntohl(message_size_net);
+    int remaining_bytes = message_size - 10;
+    while(remaining_bytes > 0)
+    {
+        char buffer[1024];
+        int to_read = remaining_bytes < 256 ? remaining_bytes : 256;
+        int n = read(client_fd,buffer,to_read);
+        if(n <= 0)
+        {
+            break;
+        }
+        remaining_bytes -= n;
+    }
+    
     uint32_t correlation_id;
     memcpy(&correlation_id, header + 4, 4);
     int response_message_size = htonl(0);
