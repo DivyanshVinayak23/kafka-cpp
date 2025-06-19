@@ -91,9 +91,25 @@ int main(int argc, char* argv[]) {
     
     uint32_t correlation_id;
     memcpy(&correlation_id, header + 4, 4);
-    int response_message_size = htonl(0);
+    uint16_t api_key , api_version;
+    memcpy(&api_key, header, 2);
+    memcpy(&api_version, header + 2, 2);
+
+    int16_t error_code = 0;
+    if(api_key == 18)
+    {
+        if(api_version > 4)
+        {
+            error_code = 35;
+        }
+
+    }
+
+    uint32_t response_message_size = htonl(6);
+    int16_t error_code_net = htons(error_code);
     write(client_fd, &response_message_size, 4);
     write(client_fd, &correlation_id,4);
+    write(client_fd, &error_code_net, 2);
     
     close(client_fd);
 
