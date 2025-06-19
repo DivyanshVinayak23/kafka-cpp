@@ -66,7 +66,7 @@ int main(int argc, char* argv[]) {
         close(server_fd);
         return 1;
     }
-    uint32_t char header[10];
+    unsigned char header[10];
     if(read(client_fd, header, 10) != 10)
     {
         std::cerr << "Failed to read the header" << std::endl;
@@ -78,7 +78,7 @@ int main(int argc, char* argv[]) {
     memcpy(&correlation_id, header + 4, 4);
     int response_message_size = htonl(0);
     write(client_fd, &response_message_size, 4);
-    write(client_fd,correlation_id,4);
+    write(client_fd, &correlation_id,4);
     
     close(client_fd);
 
