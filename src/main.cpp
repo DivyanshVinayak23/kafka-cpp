@@ -58,10 +58,28 @@ int main(int argc, char* argv[]) {
     // 
     int client_fd = accept(server_fd, reinterpret_cast<struct sockaddr*>(&client_addr), &client_addr_len);
     std::cout << "Client connected\n";
-    int message_size = htonl(0);
-    int correlation_id = htonl(7);
-    write(client_fd, &message_size, 4);
-    write(client_fd, &correlation_id, 4);
+    uint32_t message_size_net;
+    if(read(client_fd, &message_size_net,4) != 4)
+    {
+        std::cerr << "Failed to read message size" << std::endl;
+        close(client_fd);
+        close(server_fd);
+        return 1;
+    }
+    uint32_t char header[10];
+    if(read(client_fd, header, 10) != 10)
+    {
+        std::cerr << "Failed to read the header" << std::endl;
+        close(client_fd);
+        close(server_fd);
+        return 1;
+    }
+    uint32_t correlation_id;
+    memcpy(&correlation_id, header + 4, 4);
+    int response_message_size = htonl(0);
+    write(client_fd, &response_message_size, 4);
+    write(client_fd,correlation_id,4);
+    
     close(client_fd);
 
     close(server_fd);
