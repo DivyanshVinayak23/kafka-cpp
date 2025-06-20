@@ -95,21 +95,58 @@ int main(int argc, char* argv[]) {
     memcpy(&api_key, header, 2);
     memcpy(&api_version, header + 2, 2);
 
-    int16_t error_code = 35;
-    if(api_key == 18)
-    {
-        if(api_version > 4)
-        {
-            error_code = 35;
-        }
+    // Convert from network byte order to host byte order
+    api_key = ntohs(api_key);
+    api_version = ntohs(api_version);
+    correlation_id = ntohl(correlation_id);
 
+    if(api_key == 18) { // API_VERSIONS request
+        // API_VERSIONS response structure:
+        // - Error code (int16): 0 for no error
+        // - API versions array length (int32)
+        // - For each API version:
+        //   - API key (int16)
+        //   - Min version (int16)
+        //   - Max version (int16)
+        
+        int16_t error_code = 0; // No error
+        int32_t api_versions_count = 1; // We'll return 1 API version entry
+        int16_t api_key_response = 18; // API_VERSIONS
+        int16_t min_version = 0;
+        int16_t max_version = 4; // At least 4 as required by tester
+        
+        // Calculate response size: error_code(2) + api_versions_count(4) + api_key(2) + min_version(2) + max_version(2) = 12 bytes
+        uint32_t response_body_size = 12;
+        uint32_t response_message_size = htonl(response_body_size);
+        
+        // Convert to network byte order
+        int16_t error_code_net = htons(error_code);
+        int32_t api_versions_count_net = htonl(api_versions_count);
+        int16_t api_key_response_net = htons(api_key_response);
+        int16_t min_version_net = htons(min_version);
+        int16_t max_version_net = htons(max_version);
+        uint32_t correlation_id_net = htonl(correlation_id);
+        
+        // Send response
+        write(client_fd, &response_message_size, 4);
+        write(client_fd, &correlation_id_net, 4);
+        write(client_fd, &error_code_net, 2);
+        write(client_fd, &api_versions_count_net, 4);
+        write(client_fd, &api_key_response_net, 2);
+        write(client_fd, &min_version_net, 2);
+        write(client_fd, &max_version_net, 2);
+    } else {
+        // For other API keys, return unsupported version error
+        int16_t error_code = 35; // UNSUPPORTED_VERSION
+        uint32_t response_body_size = 2; // Just error code
+        uint32_t response_message_size = htonl(response_body_size);
+        int16_t error_code_net = htons(error_code);
+        uint32_t correlation_id_net = htonl(correlation_id);
+        
+        write(client_fd, &response_message_size, 4);
+        write(client_fd, &correlation_id_net, 4);
+        write(client_fd, &error_code_net, 2);
     }
-
-    uint32_t response_message_size = htonl(6);
-    int16_t error_code_net = htons(error_code);
-    write(client_fd, &response_message_size, 4);
-    write(client_fd, &correlation_id,4);
-    write(client_fd, &error_code_net, 2);
     
     close(client_fd);
 
