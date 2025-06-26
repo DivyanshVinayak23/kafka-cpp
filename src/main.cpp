@@ -8,6 +8,27 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
+
+struct RequestHeader{
+    uint16_t request_api_key;
+    uint16_t request_api_version;
+    uint32_t correlation_id;
+    uint16_t client_id_length;
+};
+
+struct api_version{
+    int16_t api_key;
+    int16_t min_version;
+    int16_t max_version;
+    char tag_buffer;
+};
+
+struct api_versions{
+    int8_t size;
+    api_version *array;
+};
+
+
 int main(int argc, char* argv[]) {
     // Disable output buffering
     std::cout << std::unitbuf;
@@ -58,96 +79,49 @@ int main(int argc, char* argv[]) {
     // 
     int client_fd = accept(server_fd, reinterpret_cast<struct sockaddr*>(&client_addr), &client_addr_len);
     std::cout << "Client connected\n";
-    uint32_t message_size_net;
-    if(read(client_fd, &message_size_net,4) != 4)
+    uint32_t size;
+    uint16_t error_code;
+    RequestHeader request_header;
+    read(client_fd,&size,sizeof(size));
+    read(client_fd,&request_header,sizeof(request_header));
+    request_header.request_api_key = ntohs(request_header.request_api_key);
+    request_header.request_api_version = ntohs(request_header.request_api_version);
+    request_header.client_id_length = ntohs(request_header.client_id_length);
+    char *client_id = new char[request_header.client_id_length];
+    read(client_fd,client_id,request_header.client_id_length);
+    size = ntohl(size);
+    char *body = new char[size - sizeof(request_header) - request_header.client_id_length];
+    read(client_fd, body, size - sizeof(request_header) - request_header.client_id_length);
+    api_versions content;
+    content.size = 2;
+    content.array = new api_version[content.size - 1];
+    content.array[0].api_key = ntohs(18);
+    content.array[0].min_version = ntohs(0);
+    content.array[0].max_version = ntohs(4);
+    uint32_t throttle_time_ms = 0;
+    int8_t tag = 0;
+    uint32_t res_size;
+    if (request_header.request_api_version > 4)
     {
-        std::cerr << "Failed to read message size" << std::endl;
-        close(client_fd);
-        close(server_fd);
-        return 1;
+        error_code = htons(35);
+        res_size = sizeof(request_header.correlation_id) + sizeof(error_code);
+        write(client_fd, &res_size, sizeof(res_size));
+        write(client_fd, &request_header.correlation_id, sizeof(request_header.correlation_id));
+        write(client_fd, &(error_code), sizeof(error_code));
     }
-    unsigned char header[10];
-    if(read(client_fd, header, 10) != 10)
+        else
     {
-        std::cerr << "Failed to read the header" << std::endl;
-        close(client_fd);
-        close(server_fd);
-        return 1;
+        error_code = 0;
+        res_size = htonl(sizeof(request_header.correlation_id) + sizeof(error_code) + sizeof(content.size) + (content.size - 1) * 7 + sizeof(throttle_time_ms) + sizeof(tag));
+        write(client_fd, &res_size, sizeof(res_size));
+        write(client_fd, &request_header.correlation_id, sizeof(request_header.correlation_id));
+        write(client_fd, &(error_code), sizeof(error_code));
+        write(client_fd, &content.size, sizeof(content.size));
+        write(client_fd, content.array, content.size * sizeof(api_version));
+        write(client_fd, &(throttle_time_ms), sizeof(throttle_time_ms));
+        write(client_fd, &(tag), sizeof(tag));
     }
-    
-    uint32_t message_size = ntohl(message_size_net);
-    int remaining_bytes = message_size - 10;
-    while(remaining_bytes > 0)
-    {
-        char buffer[1024];
-        int to_read = remaining_bytes < 256 ? remaining_bytes : 256;
-        int n = read(client_fd,buffer,to_read);
-        if(n <= 0)
-        {
-            break;
-        }
-        remaining_bytes -= n;
-    }
-    
-    uint32_t correlation_id;
-    memcpy(&correlation_id, header + 4, 4);
-    uint16_t api_key , api_version;
-    memcpy(&api_key, header, 2);
-    memcpy(&api_version, header + 2, 2);
-
-    // Convert from network byte order to host byte order
-    api_key = ntohs(api_key);
-    api_version = ntohs(api_version);
-    correlation_id = ntohl(correlation_id);
-
-    if(api_key == 18) { // API_VERSIONS request
-        // API_VERSIONS response structure:
-        // - Error code (int16): 0 for no error
-        // - API versions array length (int32)
-        // - For each API version:
-        //   - API key (int16)
-        //   - Min version (int16)
-        //   - Max version (int16)
-        
-        int16_t error_code = 0; // No error
-        int32_t api_versions_count = 1; // We'll return 1 API version entry
-        int16_t api_key_response = 18; // API_VERSIONS
-        int16_t min_version = 0;
-        int16_t max_version = 4; // At least 4 as required by tester
-        
-        // Calculate response size: error_code(2) + api_versions_count(4) + api_key(2) + min_version(2) + max_version(2) = 12 bytes
-        uint32_t response_body_size = 12;
-        uint32_t response_message_size = htonl(response_body_size);
-        
-        // Convert to network byte order
-        int16_t error_code_net = htons(error_code);
-        int32_t api_versions_count_net = htonl(api_versions_count);
-        int16_t api_key_response_net = htons(api_key_response);
-        int16_t min_version_net = htons(min_version);
-        int16_t max_version_net = htons(max_version);
-        uint32_t correlation_id_net = htonl(correlation_id);
-        
-        // Send response
-        write(client_fd, &response_message_size, 4);
-        write(client_fd, &correlation_id_net, 4);
-        write(client_fd, &error_code_net, 2);
-        write(client_fd, &api_versions_count_net, 4);
-        write(client_fd, &api_key_response_net, 2);
-        write(client_fd, &min_version_net, 2);
-        write(client_fd, &max_version_net, 2);
-    } else {
-        // For other API keys, return unsupported version error
-        int16_t error_code = 35; // UNSUPPORTED_VERSION
-        uint32_t response_body_size = 2; // Just error code
-        uint32_t response_message_size = htonl(response_body_size);
-        int16_t error_code_net = htons(error_code);
-        uint32_t correlation_id_net = htonl(correlation_id);
-        
-        write(client_fd, &response_message_size, 4);
-        write(client_fd, &correlation_id_net, 4);
-        write(client_fd, &error_code_net, 2);
-    }
-    
+    delete[] client_id;
     close(client_fd);
 
     close(server_fd);
