@@ -137,8 +137,6 @@ int main(int argc, char* argv[]) {
         content.array[0].min_version = htons(0);
         content.array[0].max_version = htons(4);
         content.array[0].tag_buffer = 0;
-        uint32_t throttle_time_ms = 0;
-        int8_t tag = 0;
         uint32_t res_size;
         
         if (request_header.request_api_version > 4) {
@@ -149,18 +147,16 @@ int main(int argc, char* argv[]) {
             write(client_fd, &error_code, sizeof(error_code));
         } else {
             error_code = 0;
-            // Calculate response size: correlation_id + error_code + api_versions_size + api_versions_array + throttle_time_ms + tag
+            // For ApiVersions v3/v4, the response structure is:
+            // correlation_id (4 bytes) + error_code (2 bytes) + api_versions array
             uint32_t response_size = sizeof(request_header.correlation_id) + sizeof(error_code) + 
-                                   sizeof(content.size) + (content.size * sizeof(api_version)) + 
-                                   sizeof(throttle_time_ms) + sizeof(tag);
+                                   sizeof(content.size) + (content.size * sizeof(api_version));
             res_size = htonl(response_size);
             write(client_fd, &res_size, sizeof(res_size));
             write(client_fd, &request_header.correlation_id, sizeof(request_header.correlation_id));
             write(client_fd, &error_code, sizeof(error_code));
             write(client_fd, &content.size, sizeof(content.size));
             write(client_fd, content.array, content.size * sizeof(api_version));
-            write(client_fd, &throttle_time_ms, sizeof(throttle_time_ms));
-            write(client_fd, &tag, sizeof(tag));
         }
         
         // Clean up memory for this request
