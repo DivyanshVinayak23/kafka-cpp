@@ -131,11 +131,12 @@ int main(int argc, char* argv[]) {
         
         // Prepare response
         api_versions content;
-        content.size = 2;
-        content.array = new api_version[content.size - 1];
-        content.array[0].api_key = ntohs(18);
-        content.array[0].min_version = ntohs(0);
-        content.array[0].max_version = ntohs(4);
+        content.size = 1;  // Changed from 2 to 1 since we only have one API version
+        content.array = new api_version[content.size];
+        content.array[0].api_key = htons(18);  // Use htons for network byte order
+        content.array[0].min_version = htons(0);
+        content.array[0].max_version = htons(4);
+        content.array[0].tag_buffer = 0;
         uint32_t throttle_time_ms = 0;
         int8_t tag = 0;
         uint32_t res_size;
@@ -148,7 +149,11 @@ int main(int argc, char* argv[]) {
             write(client_fd, &error_code, sizeof(error_code));
         } else {
             error_code = 0;
-            res_size = htonl(sizeof(request_header.correlation_id) + sizeof(error_code) + sizeof(content.size) + (content.size - 1) * 7 + sizeof(throttle_time_ms) + sizeof(tag));
+            // Calculate response size: correlation_id + error_code + api_versions_size + api_versions_array + throttle_time_ms + tag
+            uint32_t response_size = sizeof(request_header.correlation_id) + sizeof(error_code) + 
+                                   sizeof(content.size) + (content.size * sizeof(api_version)) + 
+                                   sizeof(throttle_time_ms) + sizeof(tag);
+            res_size = htonl(response_size);
             write(client_fd, &res_size, sizeof(res_size));
             write(client_fd, &request_header.correlation_id, sizeof(request_header.correlation_id));
             write(client_fd, &error_code, sizeof(error_code));
