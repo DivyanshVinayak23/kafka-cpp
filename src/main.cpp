@@ -150,7 +150,8 @@ int main(int argc, char* argv[]) {
             
             // Calculate response size - for ApiVersions v3, no throttle_time_ms or tag
             uint32_t res_size = sizeof(request_header.correlation_id) + 
-                               sizeof(error_code) + 
+                               sizeof(error_code) +
+                               sizeof(int32_t) + 
                                 sizeof(int32_t) + // content.size as single byte
                                (content.size * sizeof(api_version)) +
                                sizeof(uint8_t);
@@ -161,6 +162,10 @@ int main(int argc, char* argv[]) {
             write(client_fd, &network_res_size, sizeof(network_res_size));
             write(client_fd, &request_header.correlation_id, sizeof(request_header.correlation_id));
             write(client_fd, &error_code, sizeof(error_code));
+
+            int32_t throttle_ms = 0;
+            int32_t network_throttle_ms = htonl(throttle_ms);
+            write(client_fd, &network_throttle_ms, sizeof(network_throttle_ms));
 
             int32_t network_api_count = htonl(content.size);
             write(client_fd, &network_api_count, sizeof(network_api_count));
