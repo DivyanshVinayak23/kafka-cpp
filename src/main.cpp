@@ -151,8 +151,11 @@ int main(int argc, char* argv[]) {
             // Calculate response size - for ApiVersions v3, no throttle_time_ms or tag
             uint32_t res_size = sizeof(request_header.correlation_id) + 
                                sizeof(error_code) + 
-                               sizeof(content.size) + 
+                               1 + // content.size as single byte
                                (content.size * sizeof(api_version));
+            
+            std::cerr << "Debug: content.size = " << (int)content.size << std::endl;
+            std::cerr << "Debug: res_size = " << res_size << std::endl;
             
             // Send response
             uint32_t network_res_size = htonl(res_size);
@@ -162,6 +165,7 @@ int main(int argc, char* argv[]) {
             
             // Send content.size as a single byte (not network byte order)
             int8_t size_byte = content.size;
+            std::cerr << "Debug: sending size_byte = " << (int)size_byte << std::endl;
             write(client_fd, &size_byte, sizeof(size_byte));
             
             // Send each api_version individually to ensure correct byte order
