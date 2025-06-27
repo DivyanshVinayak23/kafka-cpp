@@ -150,16 +150,11 @@ int main(int argc, char* argv[]) {
             content.array[0].max_version = htons(4);
             content.array[0].tag_buffer = 0;
             
-            uint32_t throttle_time_ms = htonl(0);
-            int8_t tag = 0;
-            
-            // Calculate response size
+            // Calculate response size - for ApiVersions v3, no throttle_time_ms or tag
             uint32_t res_size = sizeof(request_header.correlation_id) + 
                                sizeof(error_code) + 
                                sizeof(content.size) + 
-                               (content.size * sizeof(api_version)) + 
-                               sizeof(throttle_time_ms) + 
-                               sizeof(tag);
+                               (content.size * sizeof(api_version));
             
             // Send response
             uint32_t network_res_size = htonl(res_size);
@@ -168,8 +163,6 @@ int main(int argc, char* argv[]) {
             write(client_fd, &error_code, sizeof(error_code));
             write(client_fd, &content.size, sizeof(content.size));
             write(client_fd, content.array, content.size * sizeof(api_version));
-            write(client_fd, &throttle_time_ms, sizeof(throttle_time_ms));
-            write(client_fd, &tag, sizeof(tag));
             
             delete[] content.array;
         }
