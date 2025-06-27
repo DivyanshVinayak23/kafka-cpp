@@ -151,9 +151,9 @@ int main(int argc, char* argv[]) {
             api_versions content;
             content.size = 1; // Only one API version entry
             content.array = new api_version[content.size];
-            content.array[0].api_key = 18; // API_VERSIONS
-            content.array[0].min_version = 0;
-            content.array[0].max_version = 4;
+            content.array[0].api_key = htons(18); // API_VERSIONS in network byte order
+            content.array[0].min_version = htons(0); // in network byte order
+            content.array[0].max_version = htons(4); // in network byte order
             content.array[0].tag_buffer = 0;
             
             uint32_t throttle_time_ms = 0;
