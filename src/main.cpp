@@ -152,7 +152,8 @@ int main(int argc, char* argv[]) {
             uint32_t res_size = sizeof(request_header.correlation_id) + 
                                sizeof(error_code) + 
                                 sizeof(int32_t) + // content.size as single byte
-                               (content.size * sizeof(api_version));
+                               (content.size * sizeof(api_version)) +
+                               sizeof(uint8_t);
         
             
             // Send response
@@ -172,6 +173,9 @@ int main(int argc, char* argv[]) {
                 write(client_fd, &content.array[i].min_version, sizeof(content.array[i].min_version));
                 write(client_fd, &content.array[i].max_version, sizeof(content.array[i].max_version));
             }
+
+            uint8_t zero = 0;
+            write(client_fd, &zero, sizeof(zero));
             
             delete[] content.array;
         }
