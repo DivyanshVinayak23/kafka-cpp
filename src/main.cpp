@@ -20,7 +20,6 @@ struct api_version{
     int16_t api_key;
     int16_t min_version;
     int16_t max_version;
-    char tag_buffer;
 };
 
 struct api_versions{
@@ -148,7 +147,6 @@ int main(int argc, char* argv[]) {
             content.array[0].api_key = htons(18); // ApiVersions API key
             content.array[0].min_version = htons(0);
             content.array[0].max_version = htons(4);
-            content.array[0].tag_buffer = 0;
             
             // Calculate response size - for ApiVersions v3, no throttle_time_ms or tag
             uint32_t res_size = sizeof(request_header.correlation_id) + 
@@ -162,7 +160,13 @@ int main(int argc, char* argv[]) {
             write(client_fd, &request_header.correlation_id, sizeof(request_header.correlation_id));
             write(client_fd, &error_code, sizeof(error_code));
             write(client_fd, &content.size, sizeof(content.size));
-            write(client_fd, content.array, content.size * sizeof(api_version));
+            
+            // Send each api_version individually to ensure correct byte order
+            for (int i = 0; i < content.size; i++) {
+                write(client_fd, &content.array[i].api_key, sizeof(content.array[i].api_key));
+                write(client_fd, &content.array[i].min_version, sizeof(content.array[i].min_version));
+                write(client_fd, &content.array[i].max_version, sizeof(content.array[i].max_version));
+            }
             
             delete[] content.array;
         }
