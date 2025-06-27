@@ -84,55 +84,99 @@ int main(int argc, char* argv[]) {
         uint16_t error_code;
         RequestHeader request_header;
 
-        int received_bytes = read(client_fd,&size,sizeof(size));
-        if(received_bytes == 0)
-        {
+        // Read the message size (4 bytes)
+        int received_bytes = read(client_fd, &size, sizeof(size));
+        if(received_bytes == 0 || received_bytes == -1) {
+            break;
+        }
+        
+        // Convert from network byte order
+        size = ntohl(size);
+        
+        // Read the request header
+        received_bytes = read(client_fd, &request_header, sizeof(request_header));
+        if(received_bytes == 0 || received_bytes == -1) {
             break;
         }
 
-        read(client_fd,&size,sizeof(size));
-        read(client_fd,&request_header,sizeof(request_header));
-
+        // Convert header fields from network byte order
         request_header.request_api_key = ntohs(request_header.request_api_key);
         request_header.request_api_version = ntohs(request_header.request_api_version);
+        request_header.correlation_id = ntohl(request_header.correlation_id);
         request_header.client_id_length = ntohs(request_header.client_id_length);
         
-        char *client_id = new char[request_header.client_id_length];
-        read(client_fd,client_id,request_header.client_id_length);
-        size = ntohl(size);
-        char *body = new char[size - sizeof(request_header) - request_header.client_id_length];
-        read(client_fd, body, size - sizeof(request_header) - request_header.client_id_length);
-        api_versions content;
-        content.size = 2;
-        content.array = new api_version[content.size - 1];
-        content.array[0].api_key = ntohs(18);
-        content.array[0].min_version = ntohs(0);
-        content.array[0].max_version = ntohs(4);
-        uint32_t throttle_time_ms = 0;
-        int8_t tag = 0;
-        uint32_t res_size;
-        if (request_header.request_api_version > 4)
-        {
-            error_code = htons(35);
-            res_size = sizeof(request_header.correlation_id) + sizeof(error_code);
-            write(client_fd, &res_size, sizeof(res_size));
-            write(client_fd, &request_header.correlation_id, sizeof(request_header.correlation_id));
-            write(client_fd, &(error_code), sizeof(error_code));
+        // Read client ID if present
+        char *client_id = nullptr;
+        if (request_header.client_id_length > 0) {
+            client_id = new char[request_header.client_id_length];
+            received_bytes = read(client_fd, client_id, request_header.client_id_length);
+            if(received_bytes == 0 || received_bytes == -1) {
+                delete[] client_id;
+                break;
+            }
         }
-            else
-        {
-            error_code = 0;
-            res_size = htonl(sizeof(request_header.correlation_id) + sizeof(error_code) + sizeof(content.size) + (content.size - 1) * 7 + sizeof(throttle_time_ms) + sizeof(tag));
+        
+        // Read the request body
+        uint32_t body_size = size - sizeof(request_header) - request_header.client_id_length;
+        char *body = nullptr;
+        if (body_size > 0) {
+            body = new char[body_size];
+            received_bytes = read(client_fd, body, body_size);
+            if(received_bytes == 0 || received_bytes == -1) {
+                delete[] client_id;
+                delete[] body;
+                break;
+            }
+        }
+        
+        // Prepare response
+        if (request_header.request_api_version > 4) {
+            // Unsupported version error
+            error_code = htons(35);
+            uint32_t res_size = htonl(sizeof(request_header.correlation_id) + sizeof(error_code));
             write(client_fd, &res_size, sizeof(res_size));
             write(client_fd, &request_header.correlation_id, sizeof(request_header.correlation_id));
-            write(client_fd, &(error_code), sizeof(error_code));
+            write(client_fd, &error_code, sizeof(error_code));
+        } else {
+            // Success response
+            error_code = htons(0);
+            
+            // Create API versions response
+            api_versions content;
+            content.size = 1; // Only one API version supported
+            content.array = new api_version[content.size];
+            content.array[0].api_key = htons(18); // ApiVersions API key
+            content.array[0].min_version = htons(0);
+            content.array[0].max_version = htons(4);
+            content.array[0].tag_buffer = 0;
+            
+            uint32_t throttle_time_ms = htonl(0);
+            int8_t tag = 0;
+            
+            // Calculate response size
+            uint32_t res_size = sizeof(request_header.correlation_id) + 
+                               sizeof(error_code) + 
+                               sizeof(content.size) + 
+                               (content.size * sizeof(api_version)) + 
+                               sizeof(throttle_time_ms) + 
+                               sizeof(tag);
+            
+            // Send response
+            uint32_t network_res_size = htonl(res_size);
+            write(client_fd, &network_res_size, sizeof(network_res_size));
+            write(client_fd, &request_header.correlation_id, sizeof(request_header.correlation_id));
+            write(client_fd, &error_code, sizeof(error_code));
             write(client_fd, &content.size, sizeof(content.size));
             write(client_fd, content.array, content.size * sizeof(api_version));
-            write(client_fd, &(throttle_time_ms), sizeof(throttle_time_ms));
-            write(client_fd, &(tag), sizeof(tag));
+            write(client_fd, &throttle_time_ms, sizeof(throttle_time_ms));
+            write(client_fd, &tag, sizeof(tag));
+            
+            delete[] content.array;
         }
-        delete[] client_id;
-
+        
+        // Clean up
+        if (client_id) delete[] client_id;
+        if (body) delete[] body;
     }
     close(client_fd);
 
