@@ -23,7 +23,7 @@ struct api_version{
 };
 
 struct api_versions{
-    int8_t size;
+    int32_t size;
     api_version *array;
 };
 
@@ -151,22 +151,20 @@ int main(int argc, char* argv[]) {
             // Calculate response size - for ApiVersions v3, no throttle_time_ms or tag
             uint32_t res_size = sizeof(request_header.correlation_id) + 
                                sizeof(error_code) + 
-                               1 + // content.size as single byte
+                                sizeof(int32_t) + // content.size as single byte
                                (content.size * sizeof(api_version));
-            
-            std::cerr << "Debug: content.size = " << (int)content.size << std::endl;
-            std::cerr << "Debug: res_size = " << res_size << std::endl;
+        
             
             // Send response
             uint32_t network_res_size = htonl(res_size);
             write(client_fd, &network_res_size, sizeof(network_res_size));
             write(client_fd, &request_header.correlation_id, sizeof(request_header.correlation_id));
             write(client_fd, &error_code, sizeof(error_code));
+
+            int32_t network_api_count = htonl(content.size);
+            write(client_fd, &network_api_count, sizeof(network_api_count));
             
-            // Send content.size as a single byte (not network byte order)
-            uint8_t size_byte = 1; // Explicitly set to 1
-            std::cerr << "Debug: sending size_byte = " << (int)size_byte << std::endl;
-            write(client_fd, &size_byte, sizeof(size_byte));
+
             
             // Send each api_version individually to ensure correct byte order
             for (int i = 0; i < content.size; i++) {
