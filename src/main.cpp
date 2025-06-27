@@ -103,7 +103,8 @@ int main(int argc, char* argv[]) {
         // Convert header fields from network byte order
         request_header.request_api_key = ntohs(request_header.request_api_key);
         request_header.request_api_version = ntohs(request_header.request_api_version);
-        request_header.correlation_id = ntohl(request_header.correlation_id);
+        // Keep correlation_id in network byte order for response
+        uint32_t correlation_id_host = ntohl(request_header.correlation_id);
         request_header.client_id_length = ntohs(request_header.client_id_length);
         
         // Read client ID
@@ -139,6 +140,12 @@ int main(int argc, char* argv[]) {
         if (request_header.request_api_version > 4) {
             error_code = 35; // UNSUPPORTED_VERSION
             res_size = sizeof(request_header.correlation_id) + sizeof(error_code);
+            
+            // Send error response
+            uint32_t res_size_network = htonl(res_size);
+            write(client_fd, &res_size_network, sizeof(res_size_network));
+            write(client_fd, &request_header.correlation_id, sizeof(request_header.correlation_id));
+            write(client_fd, &error_code, sizeof(error_code));
         } else {
             // Create API versions response
             api_versions content;
