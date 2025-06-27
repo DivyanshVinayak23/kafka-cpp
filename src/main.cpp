@@ -75,108 +75,67 @@ int main(int argc, char* argv[]) {
     // You can use print statements as follows for debugging, they'll be visible when running tests.
     std::cerr << "Logs from your program will appear here!\n";
     
+    // Uncomment this block to pass the first stage
+    // 
     int client_fd = accept(server_fd, reinterpret_cast<struct sockaddr*>(&client_addr), &client_addr_len);
     std::cout << "Client connected\n";
-    
     while(true){
         uint32_t size;
-        auto received_size = recv(client_fd, &size, sizeof(size), 0);
-        if(received_size <= 0){
-            std::cerr << "Error receiving size or client disconnected" << std::endl;
-            break;
-        }
-        if(received_size != sizeof(size)){
-            std::cerr << "Error receiving size: " << std::endl;
-            break;
-        }
-
-        // Convert size from network byte order
-        size = ntohl(size);
-        
+        uint16_t error_code;
         RequestHeader request_header;
-        auto header_size = recv(client_fd, &request_header, sizeof(request_header), 0);
-        if(header_size != sizeof(request_header)){
-            std::cerr << "Error receiving request header" << std::endl;
+
+        int received_bytes = read(client_fd,&size,sizeof(size));
+        if(received_bytes == 0)
+        {
             break;
         }
 
-        // Convert header fields from network byte order
+        read(client_fd,&size,sizeof(size));
+        read(client_fd,&request_header,sizeof(request_header));
+
         request_header.request_api_key = ntohs(request_header.request_api_key);
         request_header.request_api_version = ntohs(request_header.request_api_version);
-        // Keep correlation_id in network byte order for response
-        uint32_t correlation_id_host = ntohl(request_header.correlation_id);
         request_header.client_id_length = ntohs(request_header.client_id_length);
         
-        // Read client ID
-        char *client_id = nullptr;
-        if(request_header.client_id_length > 0) {
-            client_id = new char[request_header.client_id_length];
-            auto client_id_size = recv(client_fd, client_id, request_header.client_id_length, 0);
-            if(client_id_size != request_header.client_id_length){
-                std::cerr << "Error receiving client ID" << std::endl;
-                delete[] client_id;
-                break;
-            }
-        }
-        
-        // Read remaining body
-        uint32_t body_size = size - sizeof(request_header) - request_header.client_id_length;
-        char *body = nullptr;
-        if(body_size > 0) {
-            body = new char[body_size];
-            auto body_received = recv(client_fd, body, body_size, 0);
-            if(body_received != body_size){
-                std::cerr << "Error receiving body" << std::endl;
-                delete[] body;
-                if(client_id) delete[] client_id;
-                break;
-            }
-        }
-        
-        // Prepare response
-        uint16_t error_code = 0;
+        char *client_id = new char[request_header.client_id_length];
+        read(client_fd,client_id,request_header.client_id_length);
+        size = ntohl(size);
+        char *body = new char[size - sizeof(request_header) - request_header.client_id_length];
+        read(client_fd, body, size - sizeof(request_header) - request_header.client_id_length);
+        api_versions content;
+        content.size = 2;
+        content.array = new api_version[content.size - 1];
+        content.array[0].api_key = ntohs(18);
+        content.array[0].min_version = ntohs(0);
+        content.array[0].max_version = ntohs(4);
+        uint32_t throttle_time_ms = 0;
+        int8_t tag = 0;
         uint32_t res_size;
-        
-        if (request_header.request_api_version > 4) {
-            error_code = 35; // UNSUPPORTED_VERSION
+        if (request_header.request_api_version > 4)
+        {
+            error_code = htons(35);
             res_size = sizeof(request_header.correlation_id) + sizeof(error_code);
-            
-            // Send error response
-            uint32_t res_size_network = htonl(res_size);
-            write(client_fd, &res_size_network, sizeof(res_size_network));
+            write(client_fd, &res_size, sizeof(res_size));
             write(client_fd, &request_header.correlation_id, sizeof(request_header.correlation_id));
-            write(client_fd, &error_code, sizeof(error_code));
-        } else {
-            // Create API versions response
-            api_versions content;
-            content.size = 1; // Only one API version entry
-            content.array = new api_version[content.size];
-            content.array[0].api_key = htons(18); // API_VERSIONS in network byte order
-            content.array[0].min_version = htons(0); // in network byte order
-            content.array[0].max_version = htons(4); // in network byte order
-            content.array[0].tag_buffer = 0;
-            
-            // Calculate response size: correlation_id + error_code + api_versions_size + api_versions_array
-            res_size = sizeof(request_header.correlation_id) + sizeof(error_code) + 
-                      sizeof(content.size) + (content.size * sizeof(api_version));
-            
-            // Send response
-            uint32_t res_size_network = htonl(res_size);
-            write(client_fd, &res_size_network, sizeof(res_size_network));
+            write(client_fd, &(error_code), sizeof(error_code));
+        }
+            else
+        {
+            error_code = 0;
+            res_size = htonl(sizeof(request_header.correlation_id) + sizeof(error_code) + sizeof(content.size) + (content.size - 1) * 7 + sizeof(throttle_time_ms) + sizeof(tag));
+            write(client_fd, &res_size, sizeof(res_size));
             write(client_fd, &request_header.correlation_id, sizeof(request_header.correlation_id));
-            write(client_fd, &error_code, sizeof(error_code));
+            write(client_fd, &(error_code), sizeof(error_code));
             write(client_fd, &content.size, sizeof(content.size));
             write(client_fd, content.array, content.size * sizeof(api_version));
-            
-            delete[] content.array;
+            write(client_fd, &(throttle_time_ms), sizeof(throttle_time_ms));
+            write(client_fd, &(tag), sizeof(tag));
         }
-        
-        // Clean up
-        if(client_id) delete[] client_id;
-        if(body) delete[] body;
+        delete[] client_id;
+
     }
-    
     close(client_fd);
+
     close(server_fd);
     return 0;
 }
