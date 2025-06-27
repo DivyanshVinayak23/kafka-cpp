@@ -159,7 +159,10 @@ int main(int argc, char* argv[]) {
             write(client_fd, &network_res_size, sizeof(network_res_size));
             write(client_fd, &request_header.correlation_id, sizeof(request_header.correlation_id));
             write(client_fd, &error_code, sizeof(error_code));
-            write(client_fd, &content.size, sizeof(content.size));
+            
+            // Send content.size as a single byte (not network byte order)
+            int8_t size_byte = content.size;
+            write(client_fd, &size_byte, sizeof(size_byte));
             
             // Send each api_version individually to ensure correct byte order
             for (int i = 0; i < content.size; i++) {
