@@ -164,7 +164,7 @@ int main(int argc, char* argv[]) {
             write(client_fd, &error_code, sizeof(error_code));
             
             // Send content.size as a single byte (not network byte order)
-            int8_t size_byte = content.size;
+            uint8_t size_byte = 1; // Explicitly set to 1
             std::cerr << "Debug: sending size_byte = " << (int)size_byte << std::endl;
             write(client_fd, &size_byte, sizeof(size_byte));
             
