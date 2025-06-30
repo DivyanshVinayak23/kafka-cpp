@@ -10,7 +10,6 @@ struct RequestHeader {
     uint16_t request_api_key;
     uint16_t request_api_version;
     uint32_t correlation_id;
-    uint16_t client_id_length;
 };
 
 struct api_version {
@@ -33,6 +32,19 @@ void write_varint(std::ostream& os, uint32_t value) {
             byte |= 0x80;
         os.put(byte);
     } while (value != 0);
+}
+
+// Helper: read varint (Kafka compact encoding)
+uint32_t read_varint(int fd) {
+    uint32_t value = 0;
+    int shift = 0;
+    uint8_t byte;
+    do {
+        read(fd, &byte, 1);
+        value |= (byte & 0x7F) << shift;
+        shift += 7;
+    } while ((byte & 0x80) != 0);
+    return value;
 }
 
 int main() {
@@ -79,15 +91,36 @@ int main() {
         header.request_api_key = ntohs(header.request_api_key);
         header.request_api_version = ntohs(header.request_api_version);
         header.correlation_id = ntohl(header.correlation_id);
-        header.client_id_length = ntohs(header.client_id_length);
 
+        // Read client ID based on API version
+        uint32_t client_id_length = 0;
         char* client_id = nullptr;
-        if (header.client_id_length > 0) {
-            client_id = new char[header.client_id_length];
-            read(client_fd, client_id, header.client_id_length);
+        
+        if (header.request_api_version >= 3) {
+            // Flexible versions use varint for string length
+            client_id_length = read_varint(client_fd);
+            if (client_id_length > 0) {
+                client_id = new char[client_id_length];
+                read(client_fd, client_id, client_id_length);
+            }
+        } else {
+            // Older versions use int16 for string length
+            uint16_t len;
+            read(client_fd, &len, sizeof(len));
+            client_id_length = ntohs(len);
+            if (client_id_length > 0) {
+                client_id = new char[client_id_length];
+                read(client_fd, client_id, client_id_length);
+            }
         }
 
-        uint32_t remaining = size - sizeof(RequestHeader) - header.client_id_length;
+        // Calculate remaining bytes to read
+        size_t header_size = sizeof(RequestHeader);
+        if (header.request_api_version < 3) {
+            header_size += sizeof(uint16_t); // Account for int16 length field
+        }
+        uint32_t remaining = size - header_size - client_id_length;
+        
         char* body = nullptr;
         if (remaining > 0) {
             body = new char[remaining];
@@ -98,7 +131,7 @@ int main() {
         api_versions content;
         content.size = 1;
         content.array = new api_version[content.size];
-        content.array[0].api_key = htons(18); 
+        content.array[0].api_key = htons(18); // ApiVersions
         content.array[0].min_version = htons(0);
         content.array[0].max_version = htons(4);
 
@@ -107,33 +140,35 @@ int main() {
         response.write((char*)&net_corr_id, sizeof(net_corr_id));
 
         if (header.request_api_version >= 3) {
-            
+            // Throttle time
             int32_t throttle = htonl(0);
             response.write((char*)&throttle, sizeof(throttle));
 
-           
+            // Error code (required for v3+)
             uint16_t error_code = htons(0);
             response.write((char*)&error_code, sizeof(error_code));
 
-            
-            write_varint(response, content.size); 
+            // Compact array size
+            write_varint(response, content.size);
 
             for (int i = 0; i < content.size; i++) {
                 response.write((char*)&content.array[i].api_key, sizeof(int16_t));
                 response.write((char*)&content.array[i].min_version, sizeof(int16_t));
                 response.write((char*)&content.array[i].max_version, sizeof(int16_t));
                 
-            
-                write_varint(response, 0); 
+                // Tagged fields for each ApiVersion element
+                write_varint(response, 0);
             }
 
-           
-            write_varint(response, 0); 
+            // Array tagged fields
+            write_varint(response, 0);
 
-            
-            write_varint(response, 0); 
-
+            // Top-level tagged fields
+            write_varint(response, 0);
         } else {
+            // Legacy encoding for version < 3
+            uint16_t error_code = htons(0);
+            response.write((char*)&error_code, sizeof(error_code));
 
             int32_t api_count = htonl(content.size);
             response.write((char*)&api_count, sizeof(api_count));
