@@ -24,138 +24,116 @@ struct api_versions {
     api_version* array;
 };
 
-// Helper: write Kafka-style compact unsigned varint
-void write_varint(std::ostream& os, uint32_t value) {
+// Helper: write Kafka-style compact unsigned varint (LE base‑128)
+void write_varint(std::ostream& os, uint32_t val) {
     while (true) {
-        uint8_t byte = value & 0x7F;
-        value >>= 7;
-        if (value == 0) {
-            os.put(byte);
-            break;
+        uint8_t b = val & 0x7F;
+        val >>= 7;
+        if (val) {
+            os.put(b | 0x80);
         } else {
-            os.put(byte | 0x80);
+            os.put(b);
+            break;
         }
     }
 }
 
-// Helper: write int16 little-endian (Kafka expects this)
-void write_int16_le(std::ostream& os, int16_t value) {
-    os.put(static_cast<char>(value & 0xFF));
-    os.put(static_cast<char>((value >> 8) & 0xFF));
-}
-
 int main() {
-    std::cout << std::unitbuf;
     std::cerr << std::unitbuf;
+    std::cout << std::unitbuf;
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0) {
-        std::cerr << "Failed to create socket\n";
-        return 1;
-    }
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &(int){1}, sizeof(int));
 
-    int reuse = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-
-    sockaddr_in server_addr{};
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(9092);
-
-    if (bind(server_fd, (sockaddr*)&server_addr, sizeof(server_addr)) != 0) {
-        std::cerr << "Bind failed\n";
-        return 1;
-    }
-
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(9092);
+    addr.sin_addr.s_addr = INADDR_ANY;
+    bind(server_fd, (sockaddr*)&addr, sizeof(addr));
     listen(server_fd, 5);
     std::cerr << "Logs from your program will appear here!\n";
 
     sockaddr_in client_addr{};
-    socklen_t client_addr_len = sizeof(client_addr);
-    int client_fd = accept(server_fd, (sockaddr*)&client_addr, &client_addr_len);
+    socklen_t client_len = sizeof(client_addr);
+    int client_fd = accept(server_fd, (sockaddr*)&client_addr, &client_len);
     std::cout << "Client connected\n";
 
     while (true) {
-        uint32_t size;
-        int bytes = read(client_fd, &size, sizeof(size));
-        if (bytes <= 0) break;
+        uint32_t msg_size_net;
+        if (read(client_fd, &msg_size_net, 4) != 4) break;
+        uint32_t msg_size = ntohl(msg_size_net);
 
-        size = ntohl(size);
-        RequestHeader header;
-        bytes = read(client_fd, &header, sizeof(header));
-        if (bytes <= 0) break;
+        RequestHeader hdr;
+        if (read(client_fd, &hdr, sizeof(hdr)) != sizeof(hdr)) break;
+        hdr.request_api_key     = ntohs(hdr.request_api_key);
+        hdr.request_api_version = ntohs(hdr.request_api_version);
+        hdr.correlation_id      = ntohl(hdr.correlation_id);
+        hdr.client_id_length    = ntohs(hdr.client_id_length);
 
-        header.request_api_key = ntohs(header.request_api_key);
-        header.request_api_version = ntohs(header.request_api_version);
-        header.correlation_id = ntohl(header.correlation_id);
-        header.client_id_length = ntohs(header.client_id_length);
-
-        char* client_id = nullptr;
-        if (header.client_id_length > 0) {
-            client_id = new char[header.client_id_length];
-            read(client_fd, client_id, header.client_id_length);
+        if (hdr.client_id_length) {
+            delete[] new char[hdr.client_id_length];
+            read(client_fd, new char[hdr.client_id_length], hdr.client_id_length);
+        }
+        uint32_t body_len = msg_size - sizeof(hdr) - hdr.client_id_length;
+        if (body_len) {
+            delete[] new char[body_len];
+            read(client_fd, new char[body_len], body_len);
         }
 
-        uint32_t remaining = size - sizeof(RequestHeader) - header.client_id_length;
-        char* body = nullptr;
-        if (remaining > 0) {
-            body = new char[remaining];
-            read(client_fd, body, remaining);
-        }
+        // Prepare ApiVersions response
+        api_versions resp;
+        resp.size = 1;
+        resp.array = new api_version[1];
+        resp.array[0].api_key     = 18;
+        resp.array[0].min_version = 0;
+        resp.array[0].max_version = 4;
 
-        // Build response
-        api_versions content;
-        content.size = 1;
-        content.array = new api_version[content.size];
-        content.array[0].api_key = 18;  // ApiVersions
-        content.array[0].min_version = 0;
-        content.array[0].max_version = 4;
+        std::stringstream ss;
+        // 1) correlation_id
+        uint32_t corr_net = htonl(hdr.correlation_id);
+        ss.write((char*)&corr_net, 4);
 
-        std::stringstream response;
-        uint32_t net_corr_id = htonl(header.correlation_id);
-        response.write((char*)&net_corr_id, sizeof(net_corr_id));
+        if (hdr.request_api_version >= 3) {
+            // 2) throttle_time_ms
+            int32_t throttle_net = htonl(0);
+            ss.write((char*)&throttle_net, 4);
 
-        if (header.request_api_version >= 3) {
-            // Version 3+ response format
+            // 3) compact array length = N+1
+            write_varint(ss, resp.size + 1);
 
-            // 1. throttle_time_ms
-            int32_t throttle = 0;
-            response.write((char*)&throttle, sizeof(throttle));  // already little-endian
-
-            // 2. Compact array of api_versions
-            write_varint(response, content.size + 1);  // compact array length
-
-            for (int i = 0; i < content.size; i++) {
-                write_int16_le(response, content.array[i].api_key);
-                write_int16_le(response, content.array[i].min_version);
-                write_int16_le(response, content.array[i].max_version);
+            // 4) each api_version entry, **network byte order**
+            for (int i = 0; i < resp.size; i++) {
+                int16_t k_net   = htons(resp.array[i].api_key);
+                int16_t min_net = htons(resp.array[i].min_version);
+                int16_t max_net = htons(resp.array[i].max_version);
+                ss.write((char*)&k_net,   2);
+                ss.write((char*)&min_net, 2);
+                ss.write((char*)&max_net, 2);
             }
 
-            // 3. Empty tagged fields
-            write_varint(response, 0);  // compact varint = 0
+            // 5) empty tagged fields
+            write_varint(ss, 0);
         } else {
-            // Legacy response format (version < 3)
-            int32_t api_count = htonl(content.size);
-            response.write((char*)&api_count, sizeof(api_count));
-
-            for (int i = 0; i < content.size; i++) {
-                int16_t k = htons(content.array[i].api_key);
-                int16_t min = htons(content.array[i].min_version);
-                int16_t max = htons(content.array[i].max_version);
-                response.write((char*)&k, sizeof(k));
-                response.write((char*)&min, sizeof(min));
-                response.write((char*)&max, sizeof(max));
+            // legacy < v3
+            int32_t cnt_net = htonl(resp.size);
+            ss.write((char*)&cnt_net, 4);
+            for (int i = 0; i < resp.size; i++) {
+                int16_t k_net   = htons(resp.array[i].api_key);
+                int16_t min_net = htons(resp.array[i].min_version);
+                int16_t max_net = htons(resp.array[i].max_version);
+                ss.write((char*)&k_net,   2);
+                ss.write((char*)&min_net, 2);
+                ss.write((char*)&max_net, 2);
             }
         }
 
-        std::string res = response.str();
-        uint32_t net_size = htonl(res.size());
-        write(client_fd, &net_size, sizeof(net_size));
-        write(client_fd, res.data(), res.size());
+        // Write size + payload
+        std::string payload = ss.str();
+        uint32_t out_size = htonl((uint32_t)payload.size());
+        write(client_fd, &out_size, 4);
+        write(client_fd, payload.data(), payload.size());
 
-        delete[] content.array;
-        if (client_id) delete[] client_id;
-        if (body) delete[] body;
+        delete[] resp.array;
     }
 
     close(client_fd);
