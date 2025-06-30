@@ -18,11 +18,6 @@ struct api_version {
     int16_t max_version;
 };
 
-struct api_versions {
-    int32_t size;
-    api_version* array;
-};
-
 // Helper: write varint (Kafka compact encoding)
 void write_varint(std::ostream& os, uint32_t value) {
     do {
@@ -97,14 +92,12 @@ int main() {
         char* client_id = nullptr;
         
         if (header.request_api_version >= 3) {
-            // Flexible versions use varint for string length
             client_id_length = read_varint(client_fd);
             if (client_id_length > 0) {
                 client_id = new char[client_id_length];
                 read(client_fd, client_id, client_id_length);
             }
         } else {
-            // Older versions use int16 for string length
             uint16_t len;
             read(client_fd, &len, sizeof(len));
             client_id_length = ntohs(len);
@@ -117,7 +110,7 @@ int main() {
         // Calculate remaining bytes to read
         size_t header_size = sizeof(RequestHeader);
         if (header.request_api_version < 3) {
-            header_size += sizeof(uint16_t); // Account for int16 length field
+            header_size += sizeof(uint16_t);
         }
         uint32_t remaining = size - header_size - client_id_length;
         
@@ -127,65 +120,68 @@ int main() {
             read(client_fd, body, remaining);
         }
 
-        // Build response
-        api_versions content;
-        content.size = 1;
-        content.array = new api_version[content.size];
-        content.array[0].api_key = htons(18); // ApiVersions
-        content.array[0].min_version = htons(0);
-        content.array[0].max_version = htons(4);
+        // Build response - MUST include all expected APIs
+        const int NUM_APIS = 3;
+        api_version api_versions[NUM_APIS] = {
+            {htons(0),  htons(0), htons(0)},  // Produce API
+            {htons(1),  htons(0), htons(0)},  // Fetch API
+            {htons(18), htons(0), htons(4)}   // ApiVersions API
+        };
 
-        std::stringstream response;
+        std::stringstream response_body;
         uint32_t net_corr_id = htonl(header.correlation_id);
-        response.write((char*)&net_corr_id, sizeof(net_corr_id));
 
         if (header.request_api_version >= 3) {
             // Throttle time
             int32_t throttle = htonl(0);
-            response.write((char*)&throttle, sizeof(throttle));
+            response_body.write((char*)&throttle, sizeof(throttle));
 
-            // Error code (required for v3+)
+            // Error code
             uint16_t error_code = htons(0);
-            response.write((char*)&error_code, sizeof(error_code));
+            response_body.write((char*)&error_code, sizeof(error_code));
 
             // Compact array size
-            write_varint(response, content.size);
+            write_varint(response_body, NUM_APIS);
 
-            for (int i = 0; i < content.size; i++) {
-                response.write((char*)&content.array[i].api_key, sizeof(int16_t));
-                response.write((char*)&content.array[i].min_version, sizeof(int16_t));
-                response.write((char*)&content.array[i].max_version, sizeof(int16_t));
+            for (int i = 0; i < NUM_APIS; i++) {
+                response_body.write((char*)&api_versions[i].api_key, sizeof(int16_t));
+                response_body.write((char*)&api_versions[i].min_version, sizeof(int16_t));
+                response_body.write((char*)&api_versions[i].max_version, sizeof(int16_t));
                 
                 // Tagged fields for each ApiVersion element
-                write_varint(response, 0);
+                write_varint(response_body, 0);
             }
 
             // Array tagged fields
-            write_varint(response, 0);
+            write_varint(response_body, 0);
 
             // Top-level tagged fields
-            write_varint(response, 0);
+            write_varint(response_body, 0);
         } else {
             // Legacy encoding for version < 3
             uint16_t error_code = htons(0);
-            response.write((char*)&error_code, sizeof(error_code));
+            response_body.write((char*)&error_code, sizeof(error_code));
 
-            int32_t api_count = htonl(content.size);
-            response.write((char*)&api_count, sizeof(api_count));
+            int32_t api_count = htonl(NUM_APIS);
+            response_body.write((char*)&api_count, sizeof(api_count));
 
-            for (int i = 0; i < content.size; i++) {
-                response.write((char*)&content.array[i].api_key, sizeof(int16_t));
-                response.write((char*)&content.array[i].min_version, sizeof(int16_t));
-                response.write((char*)&content.array[i].max_version, sizeof(int16_t));
+            for (int i = 0; i < NUM_APIS; i++) {
+                response_body.write((char*)&api_versions[i].api_key, sizeof(int16_t));
+                response_body.write((char*)&api_versions[i].min_version, sizeof(int16_t));
+                response_body.write((char*)&api_versions[i].max_version, sizeof(int16_t));
             }
         }
 
-        std::string res = response.str();
-        uint32_t net_size = htonl(res.size());
-        write(client_fd, &net_size, sizeof(net_size));
-        write(client_fd, res.data(), res.size());
+        // Prepare full response (frame size + correlation_id + response body)
+        std::string body_str = response_body.str();
+        uint32_t frame_size = sizeof(net_corr_id) + body_str.size();
+        uint32_t net_frame_size = htonl(frame_size);
 
-        delete[] content.array;
+        // Send response
+        write(client_fd, &net_frame_size, sizeof(net_frame_size));
+        write(client_fd, &net_corr_id, sizeof(net_corr_id));
+        write(client_fd, body_str.data(), body_str.size());
+
         if (client_id) delete[] client_id;
         if (body) delete[] body;
     }
