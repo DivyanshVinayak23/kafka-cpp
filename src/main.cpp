@@ -42,13 +42,14 @@ int main() {
     std::cerr << std::unitbuf;
     std::cout << std::unitbuf;
 
+    // 1) Create socket
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) {
         std::cerr << "Failed to create socket\n";
         return 1;
     }
 
-    // Proper SO_REUSEADDR setup
+    // 2) SO_REUSEADDR
     int reuse = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse)) < 0) {
         std::cerr << "setsockopt failed\n";
@@ -56,6 +57,7 @@ int main() {
         return 1;
     }
 
+    // 3) Bind & listen
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(9092);
@@ -65,7 +67,6 @@ int main() {
         close(server_fd);
         return 1;
     }
-
     if (listen(server_fd, 5) != 0) {
         std::cerr << "Listen failed\n";
         close(server_fd);
@@ -73,6 +74,7 @@ int main() {
     }
     std::cerr << "Logs from your program will appear here!\n";
 
+    // 4) Accept one client
     sockaddr_in client_addr{};
     socklen_t client_len = sizeof(client_addr);
     int client_fd = accept(server_fd, (sockaddr*)&client_addr, &client_len);
@@ -83,6 +85,7 @@ int main() {
     }
     std::cout << "Client connected\n";
 
+    // 5) Main loop
     while (true) {
         uint32_t msg_size_net;
         if (read(client_fd, &msg_size_net, sizeof(msg_size_net)) != sizeof(msg_size_net))
@@ -97,26 +100,19 @@ int main() {
         hdr.correlation_id      = ntohl(hdr.correlation_id);
         hdr.client_id_length    = ntohs(hdr.client_id_length);
 
-        // Read client ID if present
-        char* client_id = nullptr;
+        // Read & discard client ID
         if (hdr.client_id_length > 0) {
-            client_id = new char[hdr.client_id_length];
-            if (read(client_fd, client_id, hdr.client_id_length) != hdr.client_id_length) {
-                delete[] client_id;
-                break;
-            }
+            char* cid = new char[hdr.client_id_length];
+            read(client_fd, cid, hdr.client_id_length);
+            delete[] cid;
         }
 
-        // Read body if present
+        // Read & discard body
         uint32_t body_len = msg_size - sizeof(hdr) - hdr.client_id_length;
-        char* body = nullptr;
         if (body_len > 0) {
-            body = new char[body_len];
-            if (read(client_fd, body, body_len) != (ssize_t)body_len) {
-                delete[] client_id;
-                delete[] body;
-                break;
-            }
+            char* body = new char[body_len];
+            read(client_fd, body, body_len);
+            delete[] body;
         }
 
         // Build ApiVersions response
@@ -129,53 +125,59 @@ int main() {
 
         std::stringstream ss;
 
-        // 1) correlation_id
+        // a) correlation_id (int32 BE)
         uint32_t corr_net = htonl(hdr.correlation_id);
-        ss.write((char*)&corr_net, sizeof(corr_net));
+        ss.write((char*)&corr_net, 4);
 
+        // b) version‑dependent headers
+        if (hdr.request_api_version >= 4) {
+            // v4+ : error_code (int16 BE) then throttle_time_ms (int32 BE)
+            int16_t err_net = htons(0);
+            int32_t thr_net = htonl(0);
+            ss.write((char*)&err_net, 2);
+            ss.write((char*)&thr_net, 4);
+        } else if (hdr.request_api_version == 3) {
+            // v3 : only throttle_time_ms (int32 BE)
+            int32_t thr_net = htonl(0);
+            ss.write((char*)&thr_net, 4);
+        }
+        // v0–v2 will skip both
+
+        // c) versions array
         if (hdr.request_api_version >= 3) {
-            // 2) throttle_time_ms
-            int32_t throttle_net = htonl(0);
-            ss.write((char*)&throttle_net, sizeof(throttle_net));
-
-            // 3) compact array length = N+1
+            // compact array: length = N+1, varint LE
             write_varint(ss, resp.size + 1);
-
-            // 4) each api_version entry in network byte order
             for (int i = 0; i < resp.size; i++) {
                 int16_t k_net   = htons(resp.array[i].api_key);
                 int16_t min_net = htons(resp.array[i].min_version);
                 int16_t max_net = htons(resp.array[i].max_version);
-                ss.write((char*)&k_net,   sizeof(k_net));
-                ss.write((char*)&min_net, sizeof(min_net));
-                ss.write((char*)&max_net, sizeof(max_net));
+                ss.write((char*)&k_net,   2);
+                ss.write((char*)&min_net, 2);
+                ss.write((char*)&max_net, 2);
             }
-
-            // 5) empty tagged fields
+            // tagged_fields = varint 0
             write_varint(ss, 0);
         } else {
-            // Legacy < v3
+            // legacy array: int32 BE count + entries
             int32_t cnt_net = htonl(resp.size);
-            ss.write((char*)&cnt_net, sizeof(cnt_net));
+            ss.write((char*)&cnt_net, 4);
             for (int i = 0; i < resp.size; i++) {
                 int16_t k_net   = htons(resp.array[i].api_key);
                 int16_t min_net = htons(resp.array[i].min_version);
                 int16_t max_net = htons(resp.array[i].max_version);
-                ss.write((char*)&k_net,   sizeof(k_net));
-                ss.write((char*)&min_net, sizeof(min_net));
-                ss.write((char*)&max_net, sizeof(max_net));
+                ss.write((char*)&k_net,   2);
+                ss.write((char*)&min_net, 2);
+                ss.write((char*)&max_net, 2);
             }
         }
 
-        // Send response
+        // Send size prefix + payload
         std::string payload = ss.str();
-        uint32_t out_size = htonl((uint32_t)payload.size());
-        write(client_fd, &out_size, sizeof(out_size));
+        uint32_t out_size   = htonl((uint32_t)payload.size());
+        write(client_fd, &out_size, 4);
         write(client_fd, payload.data(), payload.size());
 
         delete[] resp.array;
-        delete[] client_id;
-        delete[] body;
     }
 
     close(client_fd);
