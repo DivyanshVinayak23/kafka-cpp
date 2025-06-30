@@ -24,15 +24,24 @@ struct api_versions {
     api_version* array;
 };
 
-// Helper: write varint (Kafka compact encoding)
+// Helper: write Kafka-style compact unsigned varint
 void write_varint(std::ostream& os, uint32_t value) {
-    do {
+    while (true) {
         uint8_t byte = value & 0x7F;
         value >>= 7;
-        if (value != 0)
-            byte |= 0x80;
-        os.put(byte);
-    } while (value != 0);
+        if (value == 0) {
+            os.put(byte);
+            break;
+        } else {
+            os.put(byte | 0x80);
+        }
+    }
+}
+
+// Helper: write int16 little-endian (Kafka expects this)
+void write_int16_le(std::ostream& os, int16_t value) {
+    os.put(static_cast<char>(value & 0xFF));
+    os.put(static_cast<char>((value >> 8) & 0xFF));
 }
 
 int main() {
@@ -98,41 +107,44 @@ int main() {
         api_versions content;
         content.size = 1;
         content.array = new api_version[content.size];
-        content.array[0].api_key = htons(18); // ApiVersions
-        content.array[0].min_version = htons(0);
-        content.array[0].max_version = htons(4);
+        content.array[0].api_key = 18;  // ApiVersions
+        content.array[0].min_version = 0;
+        content.array[0].max_version = 4;
 
         std::stringstream response;
         uint32_t net_corr_id = htonl(header.correlation_id);
         response.write((char*)&net_corr_id, sizeof(net_corr_id));
 
         if (header.request_api_version >= 3) {
-            // Throttle time
-            int32_t throttle = htonl(0);
-            response.write((char*)&throttle, sizeof(throttle));
+            // Version 3+ response format
 
-            // Compact array size (length = N + 1)
-            write_varint(response, content.size + 1);
+            // 1. throttle_time_ms
+            int32_t throttle = 0;
+            response.write((char*)&throttle, sizeof(throttle));  // already little-endian
+
+            // 2. Compact array of api_versions
+            write_varint(response, content.size + 1);  // compact array length
 
             for (int i = 0; i < content.size; i++) {
-                response.write((char*)&content.array[i].api_key, sizeof(int16_t));
-                response.write((char*)&content.array[i].min_version, sizeof(int16_t));
-                response.write((char*)&content.array[i].max_version, sizeof(int16_t));
+                write_int16_le(response, content.array[i].api_key);
+                write_int16_le(response, content.array[i].min_version);
+                write_int16_le(response, content.array[i].max_version);
             }
 
-            // Empty tagged fields
-            uint8_t zero = 0;
-            response.put(zero);
-
+            // 3. Empty tagged fields
+            write_varint(response, 0);  // compact varint = 0
         } else {
-            // Legacy encoding for version < 3
+            // Legacy response format (version < 3)
             int32_t api_count = htonl(content.size);
             response.write((char*)&api_count, sizeof(api_count));
 
             for (int i = 0; i < content.size; i++) {
-                response.write((char*)&content.array[i].api_key, sizeof(int16_t));
-                response.write((char*)&content.array[i].min_version, sizeof(int16_t));
-                response.write((char*)&content.array[i].max_version, sizeof(int16_t));
+                int16_t k = htons(content.array[i].api_key);
+                int16_t min = htons(content.array[i].min_version);
+                int16_t max = htons(content.array[i].max_version);
+                response.write((char*)&k, sizeof(k));
+                response.write((char*)&min, sizeof(min));
+                response.write((char*)&max, sizeof(max));
             }
         }
 
