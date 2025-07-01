@@ -121,53 +121,73 @@ std::string ApiVersionsRequestMessage::toString() const {
 }
 
 std::string ApiVersionsResponseMessage::toBuffer() const {
-    char buffer[sizeof(ApiVersionsResponseMessage)]{};
-
-#pragma GCC diagnostic ignored "-Winvalid-offsetof"
-
-#define FILL_BUFFERL(field)                                                    \
-    *reinterpret_cast<decltype(field) *>(                                      \
-        buffer + offsetof(ApiVersionsResponseMessage, field)) = htonl(field)
-
-#define FILL_BUFFERS(field)                                                    \
-    *reinterpret_cast<decltype(field) *>(                                      \
-        buffer + offsetof(ApiVersionsResponseMessage, field)) = htons(field)
-
-    *reinterpret_cast<decltype(message_size) *>(
-        buffer + __builtin_offsetof(ApiVersionsResponseMessage, message_size)) =
-        htonl(message_size - sizeof(message_size));
-
-    FILL_BUFFERL(corellation_id);
-    FILL_BUFFERS(error_code);
-
-    *reinterpret_cast<uint8_t *>(
-        buffer + offsetof(ApiVersionsResponseMessage, api_keys_count)) =
-        api_keys_count;
-
-    FILL_BUFFERS(api_key);
-    FILL_BUFFERS(min_version);
-    FILL_BUFFERS(max_version);
-
-#undef FILL_BUFFERL
-#undef FILL_BUFFERS
-
-#pragma diagnostic(pop)
-
-    return std::string(buffer, sizeof(buffer));
+    // Calculate total size: header + api_keys_count + api_keys array + tagged_fields + throttle_time + tagged_fields2
+    size_t total_size = sizeof(ResponseHeader) + sizeof(int16_t) + sizeof(uint8_t) + 
+                       (api_keys.size() * sizeof(ApiKeyEntry)) + 
+                       sizeof(TaggedFields) + sizeof(int32_t) + sizeof(TaggedFields);
+    
+    std::string buffer;
+    buffer.reserve(total_size);
+    
+    // Response header
+    uint32_t message_size_network = htonl(message_size - sizeof(message_size));
+    buffer.append(reinterpret_cast<const char*>(&message_size_network), sizeof(message_size_network));
+    
+    uint32_t correlation_id_network = htonl(corellation_id);
+    buffer.append(reinterpret_cast<const char*>(&correlation_id_network), sizeof(correlation_id_network));
+    
+    // Error code
+    uint16_t error_code_network = htons(error_code);
+    buffer.append(reinterpret_cast<const char*>(&error_code_network), sizeof(error_code_network));
+    
+    // API keys count
+    buffer.append(reinterpret_cast<const char*>(&api_keys_count), sizeof(api_keys_count));
+    
+    // API keys array
+    for (const auto& api_key : api_keys) {
+        uint16_t api_key_network = htons(api_key.api_key);
+        buffer.append(reinterpret_cast<const char*>(&api_key_network), sizeof(api_key_network));
+        
+        uint16_t min_version_network = htons(api_key.min_version);
+        buffer.append(reinterpret_cast<const char*>(&min_version_network), sizeof(min_version_network));
+        
+        uint16_t max_version_network = htons(api_key.max_version);
+        buffer.append(reinterpret_cast<const char*>(&max_version_network), sizeof(max_version_network));
+    }
+    
+    // Tagged fields
+    buffer.append(reinterpret_cast<const char*>(&tagged_fields.fieldCount), sizeof(tagged_fields.fieldCount));
+    
+    // Throttle time
+    uint32_t throttle_time_network = htonl(throttle_time);
+    buffer.append(reinterpret_cast<const char*>(&throttle_time_network), sizeof(throttle_time_network));
+    
+    // Tagged fields 2
+    buffer.append(reinterpret_cast<const char*>(&tagged_fields2.fieldCount), sizeof(tagged_fields2.fieldCount));
+    
+    return buffer;
 }
 
 std::string ApiVersionsResponseMessage::toString() const {
-    return "ApiVersionsResponseMessage{message_size=" +
+    std::string result = "ApiVersionsResponseMessage{message_size=" +
            std::to_string(message_size) +
            ", corellation_id=" + std::to_string(corellation_id) +
            ", error_code=" + std::to_string(error_code) +
-           ", api_key=" + std::to_string(api_key) +
            ", api_keys_count=" + std::to_string(api_keys_count) +
-           ", min_version=" + std::to_string(min_version) +
-           ", max_version=" + std::to_string(max_version) +
-           ", throttle_time=" + std::to_string(throttle_time) +
-           ", tagged_fields=" + tagged_fields.toString() +
-           ", tagged_fields2=" + tagged_fields2.toString() + "}";
+           ", api_keys=[";
+    
+    for (size_t i = 0; i < api_keys.size(); ++i) {
+        if (i > 0) result += ", ";
+        result += "{api_key=" + std::to_string(api_keys[i].api_key) +
+                 ", min_version=" + std::to_string(api_keys[i].min_version) +
+                 ", max_version=" + std::to_string(api_keys[i].max_version) + "}";
+    }
+    
+    result += "], throttle_time=" + std::to_string(throttle_time) +
+              ", tagged_fields=" + tagged_fields.toString() +
+              ", tagged_fields2=" + tagged_fields2.toString() + "}";
+    
+    return result;
 }
 
 void TCPManager::createSocketAndListen() {
@@ -298,8 +318,6 @@ void KafkaApis::checkApiVersions(const char *buf, const size_t buf_size) const {
               << "\n";
 
     ApiVersionsResponseMessage api_versions_response_message;
-    api_versions_response_message.message_size =
-        sizeof(ApiVersionsResponseMessage);
     api_versions_response_message.corellation_id =
         request_message.corellation_id;
 
@@ -311,11 +329,28 @@ void KafkaApis::checkApiVersions(const char *buf, const size_t buf_size) const {
     } else {
         std::cout << "Supported version: "
                   << request_message.request_api_version << "\n";
-        api_versions_response_message.api_keys_count = 2;
-        api_versions_response_message.api_key = API_VERSIONS_REQUEST;
-        api_versions_response_message.min_version = 3;
-        api_versions_response_message.max_version = 4;
+        
+        // Add API_VERSIONS entry
+        ApiVersionsResponseMessage::ApiKeyEntry api_versions_entry;
+        api_versions_entry.api_key = API_VERSIONS_REQUEST;
+        api_versions_entry.min_version = 0;
+        api_versions_entry.max_version = 4;
+        api_versions_response_message.api_keys.push_back(api_versions_entry);
+        
+        // Add DESCRIBE_TOPIC_PARTITIONS entry
+        ApiVersionsResponseMessage::ApiKeyEntry describe_topic_partitions_entry;
+        describe_topic_partitions_entry.api_key = DESCRIBE_TOPIC_PARTITIONS_REQUEST;
+        describe_topic_partitions_entry.min_version = 0;
+        describe_topic_partitions_entry.max_version = 0;
+        api_versions_response_message.api_keys.push_back(describe_topic_partitions_entry);
+        
+        api_versions_response_message.api_keys_count = api_versions_response_message.api_keys.size();
     }
+    
+    // Calculate message size dynamically
+    api_versions_response_message.message_size = sizeof(ResponseHeader) + sizeof(int16_t) + sizeof(uint8_t) + 
+                                               (api_versions_response_message.api_keys.size() * sizeof(ApiVersionsResponseMessage::ApiKeyEntry)) + 
+                                               sizeof(TaggedFields) + sizeof(int32_t) + sizeof(TaggedFields);
 
     tcp_manager.writeBufferOnClientFd(client_fd, api_versions_response_message);
 }
