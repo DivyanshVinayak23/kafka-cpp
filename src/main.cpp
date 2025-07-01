@@ -16,26 +16,15 @@ int main(int argc, char *argv[]) {
 
         shutdown_handler = [&tcp_manager](int signal) {
             std::cout << "Caught signal " << signal << '\n';
-            tcp_manager.~TCPManager();
-            exit(1);
+            tcp_manager.shutdown();
+            exit(0);
         };
 
         signal(SIGINT, signal_handler);
-        Fd client_fd = tcp_manager.acceptConnections();
-
-        while (true) {
-            try {
-                KafkaApis kafka_apis(client_fd, tcp_manager);
-
-                tcp_manager.readBufferFromClientFd(
-                    client_fd,
-                    [&kafka_apis](const char *buf, const size_t buf_size) {
-                        kafka_apis.classifyRequest(buf, buf_size);
-                    });
-            } catch (const std::exception &e) {
-                std::cerr << "Error handling client: " << e.what() << '\n';
-            }
-        }
+        
+        // Run the multi-threaded server
+        tcp_manager.runServer();
+        
     } catch (const std::exception &e) {
         std::cerr << "Error: " << e.what() << '\n';
         return 1;

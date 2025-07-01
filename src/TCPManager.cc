@@ -2,6 +2,7 @@
 
 #include <netinet/tcp.h>
 #include <unistd.h>
+#include <algorithm>
 
 Fd &Fd::operator=(Fd &&other) noexcept {
     if (this != &other) {
@@ -317,4 +318,87 @@ void KafkaApis::checkApiVersions(const char *buf, const size_t buf_size) const {
     }
 
     tcp_manager.writeBufferOnClientFd(client_fd, api_versions_response_message);
+}
+
+TCPManager::~TCPManager() {
+    shutdown();
+}
+
+void TCPManager::runServer() {
+    std::cout << "Server started, accepting multiple clients...\n";
+    
+    while (!shutdown_flag) {
+        try {
+            Fd client_fd = acceptConnections();
+            
+            // Create a new thread to handle this client
+            std::lock_guard<std::mutex> lock(threads_mutex);
+            client_threads.emplace_back(&TCPManager::handleClient, this, std::move(client_fd));
+            
+            // Clean up finished threads
+            client_threads.erase(
+                std::remove_if(client_threads.begin(), client_threads.end(),
+                    [](std::thread& t) {
+                        if (t.joinable()) {
+                            return false;
+                        }
+                        t.join();
+                        return true;
+                    }),
+                client_threads.end()
+            );
+            
+        } catch (const std::exception& e) {
+            if (!shutdown_flag) {
+                std::cerr << "Error accepting connection: " << e.what() << '\n';
+            }
+            break;
+        }
+    }
+}
+
+void TCPManager::handleClient(Fd client_fd) {
+    try {
+        while (!shutdown_flag) {
+            try {
+                KafkaApis kafka_apis(client_fd, *this);
+
+                readBufferFromClientFd(
+                    client_fd,
+                    [&kafka_apis](const char *buf, const size_t buf_size) {
+                        kafka_apis.classifyRequest(buf, buf_size);
+                    });
+            } catch (const std::exception &e) {
+                std::cerr << "Error handling client: " << e.what() << '\n';
+                break;
+            }
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "Client thread error: " << e.what() << '\n';
+    }
+    
+    cleanupClient(std::move(client_fd));
+}
+
+void TCPManager::cleanupClient(Fd client_fd) {
+    std::cout << "Client disconnected, cleaning up...\n";
+    // The Fd destructor will automatically close the file descriptor
+}
+
+void TCPManager::shutdown() {
+    shutdown_flag = true;
+    
+    // Close the server socket to stop accepting new connections
+    if (server_fd.getFd() >= 0) {
+        close(server_fd.getFd());
+    }
+    
+    // Wait for all client threads to finish
+    std::lock_guard<std::mutex> lock(threads_mutex);
+    for (auto& thread : client_threads) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+    client_threads.clear();
 }

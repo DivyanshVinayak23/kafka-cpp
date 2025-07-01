@@ -3,6 +3,10 @@
 #include <netdb.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <thread>
+#include <mutex>
+#include <vector>
+#include <atomic>
 
 struct Fd {
     explicit Fd(int _fd) : fd(_fd) {}
@@ -87,6 +91,7 @@ struct ApiVersionsResponseMessage : ResponseHeader {
 
 struct TCPManager {
     TCPManager() = default;
+    ~TCPManager();
 
     static struct sockaddr_in getSocketAddr() {
         struct sockaddr_in server_addr {
@@ -97,6 +102,8 @@ struct TCPManager {
     }
 
     void createSocketAndListen();
+    void runServer();
+    void shutdown();
     Fd acceptConnections() const;
 
     void writeBufferOnClientFd(const Fd &client_fd,
@@ -106,8 +113,14 @@ struct TCPManager {
         const Fd &client_fd,
         const std::function<void(const char *, const size_t)> &func) const;
 
+    void handleClient(Fd client_fd);
+    void cleanupClient(Fd client_fd);
+
   private:
     Fd server_fd;
+    std::vector<std::thread> client_threads;
+    std::mutex threads_mutex;
+    std::atomic<bool> shutdown_flag{false};
 };
 
 struct KafkaApis {
